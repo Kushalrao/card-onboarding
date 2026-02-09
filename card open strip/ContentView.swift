@@ -8,17 +8,71 @@
 import SwiftUI
 
 struct ContentView: View {
+    @State private var showGradientBg = false
+    @State private var envelopeOpacity: Double = 1.0
+    @State private var showCard = false
+
     var body: some View {
         GeometryReader { geo in
+            let envW = min(geo.size.width * 0.88, 370)
+            let envH = min(geo.size.height * 0.72, 540)
+            let cardW = envW * 0.82
+            let cardH = cardW / 1.586
+            let bodyH = envH * 0.72
+
+            // Compute card's exact screen Y when fully pulled out
+            let bodyTop = envH * 0.28
+            let bodyCenterY = bodyTop + bodyH / 2
+            let slotCenterY = bodyCenterY - bodyH * 0.06
+            let lipHeight = cardH * 0.36
+            let cardTravel = cardH * 1.1
+            let cardCenterInGroup = slotCenterY - lipHeight * 0.35 - cardTravel
+            let relToGroupCenter = cardCenterInGroup - envH / 2
+            let scaledRel = relToGroupCenter * 0.79
+            let cardYInEnvFrame = envH / 2 + scaledRel + 20
+            let envFrameTopY = (geo.size.height - envH) / 2
+            let cardScreenY = envFrameTopY + cardYInEnvFrame
+
             ZStack {
                 Color(red: 0.96, green: 0.95, blue: 0.93)
                     .ignoresSafeArea()
 
-                EnvelopeView()
-                    .frame(
-                        width: min(geo.size.width * 0.88, 370),
-                        height: min(geo.size.height * 0.72, 540)
+                if showGradientBg {
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.45, green: 0.50, blue: 0.85),
+                            Color(red: 0.62, green: 0.40, blue: 0.78),
+                            Color(red: 0.85, green: 0.35, blue: 0.62),
+                            Color(red: 0.95, green: 0.40, blue: 0.45),
+                            Color(red: 0.95, green: 0.55, blue: 0.30)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
                     )
+                    .ignoresSafeArea()
+                    .transition(.move(edge: .bottom))
+                }
+
+                EnvelopeView(onCardOut: {
+                    showCard = true
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        envelopeOpacity = 0
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        withAnimation(.easeInOut(duration: 0.5)) {
+                            showGradientBg = true
+                        }
+                    }
+                })
+                .frame(width: envW, height: envH)
+                .opacity(envelopeOpacity)
+
+                // Standalone card that persists after envelope fades
+                if showCard {
+                    CreditCard(width: cardW, height: cardH)
+                        .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
+                        .position(x: geo.size.width / 2, y: cardScreenY)
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -28,6 +82,8 @@ struct ContentView: View {
 // MARK: - Envelope View
 
 struct EnvelopeView: View {
+
+    var onCardOut: () -> Void = {}
 
     @State private var tearProgress: CGFloat = 0     // 0 = sealed, 1 = fully torn (left→right)
     @State private var isTorn: Bool = false
@@ -69,6 +125,14 @@ struct EnvelopeView: View {
                                 .onChanged { value in
                                     let upward = -value.translation.height
                                     guard upward > 0 else { return }
+
+                                    // Flatten the flap as card is being pulled
+                                    if flapAngle < 180 {
+                                        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+                                            flapAngle = 180
+                                        }
+                                    }
+
                                     let cardH = W * 0.82 / 1.586
                                     cardPullProgress = min(1.0, upward / (cardH * 1.5))
 
@@ -87,6 +151,7 @@ struct EnvelopeView: View {
                                         }
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                             cardOut = true
+                                            onCardOut()
                                         }
                                     } else {
                                         withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
@@ -114,12 +179,12 @@ struct EnvelopeView: View {
                                 .onChanged { value in
                                     let upward = -value.translation.height
                                     guard upward > 0 else { return }
-                                    flapAngle = min(180, max(0, upward / flapH * 200))
+                                    flapAngle = min(145, max(0, upward / flapH * 200))
                                 }
                                 .onEnded { _ in
-                                    if flapAngle > 75 {
+                                    if flapAngle > 60 {
                                         withAnimation(.spring(response: 0.65, dampingFraction: 0.76)) {
-                                            flapAngle = 180
+                                            flapAngle = 145
                                         }
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                                             isOpen = true
