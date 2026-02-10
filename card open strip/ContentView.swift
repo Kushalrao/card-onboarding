@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showGradientBg = false
     @State private var envelopeOpacity: Double = 1.0
     @State private var showCard = false
+    @State private var lightFlash: Double = 1.0
 
     var body: some View {
         GeometryReader { geo in
@@ -38,17 +39,22 @@ struct ContentView: View {
                     .ignoresSafeArea()
 
                 if showGradientBg {
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.45, green: 0.50, blue: 0.85),
-                            Color(red: 0.62, green: 0.40, blue: 0.78),
-                            Color(red: 0.85, green: 0.35, blue: 0.62),
-                            Color(red: 0.95, green: 0.40, blue: 0.45),
-                            Color(red: 0.95, green: 0.55, blue: 0.30)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                    ZStack {
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.96, green: 0.72, blue: 0.22),  // golden amber
+                                Color(red: 0.96, green: 0.55, blue: 0.28),  // warm orange
+                                Color(red: 0.95, green: 0.30, blue: 0.55),  // hot pink
+                                Color(red: 0.82, green: 0.30, blue: 0.72),  // vibrant magenta
+                                Color(red: 0.58, green: 0.48, blue: 0.90)   // rich purple
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+
+                        // Bright flash that fades out — makes it feel like a ray of light
+                        Color.white.opacity(lightFlash)
+                    }
                     .ignoresSafeArea()
                     .transition(.move(edge: .bottom))
                 }
@@ -58,9 +64,14 @@ struct ContentView: View {
                     withAnimation(.easeOut(duration: 0.35)) {
                         envelopeOpacity = 0
                     }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        withAnimation(.easeInOut(duration: 0.5)) {
-                            showGradientBg = true
+                }, onCardNearOut: {
+                    lightFlash = 1.0
+                    withAnimation(.easeInOut(duration: 0.5)) {
+                        showGradientBg = true
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        withAnimation(.easeOut(duration: 0.8)) {
+                            lightFlash = 0
                         }
                     }
                 })
@@ -70,6 +81,7 @@ struct ContentView: View {
                 // Standalone card that persists after envelope fades
                 if showCard {
                     CreditCard(width: cardW, height: cardH)
+                        .scaleEffect(1.13)
                         .shadow(color: .black.opacity(0.2), radius: 20, y: 10)
                         .position(x: geo.size.width / 2, y: cardScreenY)
                 }
@@ -84,6 +96,7 @@ struct ContentView: View {
 struct EnvelopeView: View {
 
     var onCardOut: () -> Void = {}
+    var onCardNearOut: () -> Void = {}
 
     @State private var tearProgress: CGFloat = 0     // 0 = sealed, 1 = fully torn (left→right)
     @State private var isTorn: Bool = false
@@ -94,8 +107,10 @@ struct EnvelopeView: View {
     @State private var cardOut: Bool = false
 
     @State private var lastCardHapticStep: Int = 0
+    @State private var openScale: CGFloat = 1.0
+    @State private var didFireNearOut: Bool = false
 
-    private let hapticGenerator = UIImpactFeedbackGenerator(style: .light)
+    private let hapticGenerator = UIImpactFeedbackGenerator(style: .medium)
     private let cardHapticGenerator = UIImpactFeedbackGenerator(style: .soft)
 
     var body: some View {
@@ -104,10 +119,10 @@ struct EnvelopeView: View {
             let totalH = geo.size.height
             let bodyH = totalH * 0.72
             let flapH = bodyH * 0.62
-            let stripH: CGFloat = 22
+            let stripH: CGFloat = 44
             let bodyTop = totalH - bodyH
 
-            let envelopeScale = 1.0 - cardPullProgress * 0.21
+            let envelopeScale = openScale - cardPullProgress * 0.21
 
             ZStack(alignment: .top) {
 
@@ -116,7 +131,7 @@ struct EnvelopeView: View {
                 // ==============================
                 ZStack(alignment: .top) {
                     // LAYER 1: Envelope Body
-                    EnvelopeBody(width: W, height: bodyH, cardPullProgress: cardPullProgress)
+                    EnvelopeBody(width: W, height: bodyH, cardPullProgress: cardPullProgress, openScale: openScale)
                         .offset(y: bodyTop)
                         .zIndex(1)
                         .gesture(
@@ -125,6 +140,11 @@ struct EnvelopeView: View {
                                 .onChanged { value in
                                     let upward = -value.translation.height
                                     guard upward > 0 else { return }
+
+                                    // Initial haptic when card drag starts
+                                    if lastCardHapticStep == 0 {
+                                        cardHapticGenerator.impactOccurred(intensity: 0.6)
+                                    }
 
                                     // Flatten the flap as card is being pulled
                                     if flapAngle < 180 {
@@ -141,6 +161,12 @@ struct EnvelopeView: View {
                                     if step > lastCardHapticStep {
                                         lastCardHapticStep = step
                                         cardHapticGenerator.impactOccurred(intensity: 0.3)
+                                    }
+
+                                    // Start gradient before card is fully out
+                                    if cardPullProgress > 0.7 && !didFireNearOut {
+                                        didFireNearOut = true
+                                        onCardNearOut()
                                     }
                                 }
                                 .onEnded { _ in
@@ -163,7 +189,7 @@ struct EnvelopeView: View {
                         )
 
                     // LAYER 2: Envelope Flap
-                    EnvelopeFlap(width: W, height: flapH, angle: flapAngle)
+                    EnvelopeFlap(width: W, height: flapH, angle: flapAngle, fullyOpen: isOpen)
                         .rotation3DEffect(
                             .degrees(flapAngle),
                             axis: (x: 1, y: 0, z: 0),
@@ -180,11 +206,14 @@ struct EnvelopeView: View {
                                     let upward = -value.translation.height
                                     guard upward > 0 else { return }
                                     flapAngle = min(145, max(0, upward / flapH * 200))
+                                    let scaleProgress = max(0, (flapAngle - 90) / 55.0)
+                                    openScale = 1.0 + scaleProgress * 0.13
                                 }
                                 .onEnded { _ in
                                     if flapAngle > 60 {
                                         withAnimation(.spring(response: 0.65, dampingFraction: 0.76)) {
                                             flapAngle = 145
+                                            openScale = 1.13
                                         }
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                                             isOpen = true
@@ -192,6 +221,7 @@ struct EnvelopeView: View {
                                     } else {
                                         withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
                                             flapAngle = 0
+                                            openScale = 1.0
                                         }
                                     }
                                 }
@@ -199,45 +229,51 @@ struct EnvelopeView: View {
                         )
 
                     // LAYER 3: Tear Strip
-                    if !isTorn {
-                        TearStripPeel(width: W, height: stripH, tearProgress: tearProgress)
-                            .position(x: W / 2, y: bodyTop + flapH)
-                            .zIndex(3)
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        let rightward = value.translation.width
-                                        guard rightward > 0 else { return }
-                                        tearProgress = min(1.0, rightward / (W * 0.55))
+                    TearStripPeel(width: W, height: stripH, tearProgress: tearProgress)
+                        .position(x: W / 2, y: bodyTop + flapH)
+                        .zIndex(3)
+                        .opacity(isTorn ? 0 : 1)
+                        .allowsHitTesting(!isTorn)
+                        .gesture(
+                            !isTorn
+                            ? DragGesture()
+                                .onChanged { value in
+                                    let rightward = value.translation.width
+                                    guard rightward > 0 else { return }
+                                    tearProgress = min(1.0, rightward / (W * 0.55))
 
-                                        let step = Int(tearProgress * 25)
-                                        if step > lastHapticStep {
-                                            lastHapticStep = step
-                                            hapticGenerator.impactOccurred(intensity: 0.4)
-                                        }
+                                    let step = Int(tearProgress * 25)
+                                    if step > lastHapticStep {
+                                        lastHapticStep = step
+                                        hapticGenerator.impactOccurred(intensity: 0.7)
                                     }
-                                    .onEnded { _ in
-                                        lastHapticStep = 0
-                                        if tearProgress > 0.5 {
-                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) {
-                                                tearProgress = 1.0
-                                            }
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                                withAnimation(.easeOut(duration: 0.15)) {
-                                                    isTorn = true
-                                                }
-                                            }
-                                        } else {
-                                            withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
-                                                tearProgress = 0
+                                }
+                                .onEnded { _ in
+                                    lastHapticStep = 0
+                                    if tearProgress > 0.5 {
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) {
+                                            tearProgress = 1.0
+                                        }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                            withAnimation(.easeOut(duration: 0.15)) {
+                                                isTorn = true
                                             }
                                         }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                                            withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
+                                                flapAngle = 10
+                                            }
+                                        }
+                                    } else {
+                                        withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                                            tearProgress = 0
+                                        }
                                     }
-                            )
-                    }
+                                }
+                            : nil
+                        )
                 }
                 .scaleEffect(envelopeScale)
-                .offset(y: cardPullProgress * 20)
                 .shadow(color: .black.opacity(0.12), radius: 28, x: 0, y: 14)
             }
             .frame(width: W, height: totalH)
@@ -251,17 +287,18 @@ struct EnvelopeBody: View {
     let width: CGFloat
     let height: CGFloat
     var cardPullProgress: CGFloat = 0
+    var openScale: CGFloat = 1.0
 
     private let gradient = LinearGradient(
         colors: [
-            Color(red: 0.95, green: 0.55, blue: 0.30),  // warm orange
-            Color(red: 0.95, green: 0.40, blue: 0.45),  // coral/red
-            Color(red: 0.85, green: 0.35, blue: 0.62),  // pink
-            Color(red: 0.62, green: 0.40, blue: 0.78),  // purple
-            Color(red: 0.45, green: 0.50, blue: 0.85)   // blue
+            Color(red: 0.96, green: 0.72, blue: 0.22),  // golden amber
+            Color(red: 0.96, green: 0.55, blue: 0.28),  // warm orange
+            Color(red: 0.95, green: 0.30, blue: 0.55),  // hot pink
+            Color(red: 0.82, green: 0.30, blue: 0.72),  // vibrant magenta
+            Color(red: 0.58, green: 0.48, blue: 0.90)   // rich purple
         ],
-        startPoint: .bottomLeading,
-        endPoint: .topTrailing
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
     )
 
     var body: some View {
@@ -278,7 +315,7 @@ struct EnvelopeBody: View {
 
             // Card slot with proper credit card proportions
             CardSlot(width: slotW, height: slotH, cardWidth: cardW, cardHeight: cardH,
-                     cardPullProgress: cardPullProgress)
+                     cardPullProgress: cardPullProgress, openScale: openScale)
                 .offset(y: -height * 0.06)
 
             // Small text
@@ -289,7 +326,7 @@ struct EnvelopeBody: View {
                 .offset(y: (slotH / 2) + 20 - height * 0.06)
 
             // Bottom logo
-            Text("Premium Card")
+            Text("Scapia Card")
                 .font(.system(size: 14, weight: .bold, design: .rounded))
                 .foregroundColor(.white.opacity(0.55))
                 .italic()
@@ -307,13 +344,14 @@ struct CardSlot: View {
     let cardWidth: CGFloat
     let cardHeight: CGFloat
     var cardPullProgress: CGFloat = 0
+    var openScale: CGFloat = 1.0
 
     private let pocketGradient = LinearGradient(
         colors: [
-            Color(red: 0.95, green: 0.55, blue: 0.30).opacity(0.85),
-            Color(red: 0.92, green: 0.40, blue: 0.50).opacity(0.85),
-            Color(red: 0.72, green: 0.38, blue: 0.70).opacity(0.85),
-            Color(red: 0.50, green: 0.45, blue: 0.82).opacity(0.85)
+            Color(red: 0.96, green: 0.72, blue: 0.22).opacity(0.85),  // golden amber
+            Color(red: 0.95, green: 0.30, blue: 0.55).opacity(0.85),  // hot pink
+            Color(red: 0.82, green: 0.30, blue: 0.72).opacity(0.85),  // vibrant magenta
+            Color(red: 0.58, green: 0.48, blue: 0.90).opacity(0.85)   // rich purple
         ],
         startPoint: .leading,
         endPoint: .trailing
@@ -334,11 +372,11 @@ struct CardSlot: View {
                 .frame(width: width, height: height)
 
             // Card — slides upward as cardPullProgress increases
-            // Counter-scale so card stays full size while envelope shrinks
-            let envelopeScale = 1.0 - cardPullProgress * 0.21
-            let counterScale = envelopeScale > 0.01 ? 1.0 / envelopeScale : 1.0
+            // Counter-scale only compensates for card-pull shrink, not the open scale
+            let envelopeScale = openScale - cardPullProgress * 0.21
+            let counterScale = envelopeScale > 0.01 ? openScale / envelopeScale : 1.0
 
-            CreditCard(width: cardWidth, height: cardHeight)
+            CreditCard(width: cardWidth, height: cardHeight, shimmer: cardPullProgress)
                 .scaleEffect(counterScale)
                 .shadow(
                     color: .black.opacity(Double(cardPullProgress * 0.25)),
@@ -357,7 +395,14 @@ struct CardSlot: View {
                     bottomTrailingRadius: 12,
                     topTrailingRadius: 0
                 )
-                .fill(pocketGradient)
+                .fill(Color(red: 0.85, green: 0.85, blue: 0.88).opacity(0.55))
+                .background(.ultraThinMaterial)
+                .clipShape(UnevenRoundedRectangle(
+                    topLeadingRadius: 0,
+                    bottomLeadingRadius: 12,
+                    bottomTrailingRadius: 12,
+                    topTrailingRadius: 0
+                ))
                 .frame(width: width, height: lipHeight)
                 .shadow(color: .black.opacity(0.08), radius: 3, y: -2)
             }
@@ -372,28 +417,131 @@ struct CardSlot: View {
 struct CreditCard: View {
     let width: CGFloat
     let height: CGFloat
+    var shimmer: CGFloat = 0
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.96, green: 0.96, blue: 0.97),  // near-white
-                        Color(red: 0.91, green: 0.91, blue: 0.93),  // light silver
-                        Color(red: 0.94, green: 0.94, blue: 0.95),  // silver highlight
-                        Color(red: 0.88, green: 0.88, blue: 0.91)   // slightly darker silver
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
+        let chipW = width * 0.16
+        let chipH = chipW * 0.72
+
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.96, green: 0.96, blue: 0.97),
+                            Color(red: 0.91, green: 0.91, blue: 0.93),
+                            Color(red: 0.94, green: 0.94, blue: 0.95),
+                            Color(red: 0.88, green: 0.88, blue: 0.91)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 )
-            )
-            .overlay(
-                // Subtle inner shine
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.5), lineWidth: 0.5)
-            )
-            .frame(width: width, height: height)
-            .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.5), lineWidth: 0.5)
+                )
+
+            // EMV Chip
+            ChipView(width: chipW, height: chipH, shimmer: shimmer)
+                .offset(x: width * 0.12, y: height * 0.3)
+        }
+        .frame(width: width, height: height)
+        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+    }
+}
+
+// MARK: - EMV Chip
+
+struct ChipView: View {
+    let width: CGFloat
+    let height: CGFloat
+    var shimmer: CGFloat = 0
+
+    var body: some View {
+        let chipGradient = LinearGradient(
+            colors: [
+                Color(red: 0.78, green: 0.74, blue: 0.65),
+                Color(red: 0.85, green: 0.82, blue: 0.72),
+                Color(red: 0.90, green: 0.87, blue: 0.78),
+                Color(red: 0.82, green: 0.78, blue: 0.68)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+
+        ZStack {
+            // Base
+            RoundedRectangle(cornerRadius: width * 0.15)
+                .fill(chipGradient)
+
+            // Shimmer overlay when card moves
+            if shimmer > 0 {
+                RoundedRectangle(cornerRadius: width * 0.15)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0),
+                                Color.white.opacity(Double(shimmer) * 0.5),
+                                Color.white.opacity(0)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+            }
+
+            // Chip line pattern
+            Canvas { context, size in
+                let lw: CGFloat = 0.8
+                let r = size.width * 0.15
+                let cx = size.width / 2
+                let cy = size.height / 2
+
+                // Vertical center line
+                var vLine = Path()
+                vLine.move(to: CGPoint(x: cx, y: 0))
+                vLine.addLine(to: CGPoint(x: cx, y: size.height))
+                context.stroke(vLine, with: .color(.white.opacity(0.55)), lineWidth: lw)
+
+                // Horizontal center line
+                var hLine = Path()
+                hLine.move(to: CGPoint(x: 0, y: cy))
+                hLine.addLine(to: CGPoint(x: size.width, y: cy))
+                context.stroke(hLine, with: .color(.white.opacity(0.55)), lineWidth: lw)
+
+                // Left curved lines
+                var leftTop = Path()
+                leftTop.move(to: CGPoint(x: 0, y: cy * 0.45))
+                leftTop.addQuadCurve(to: CGPoint(x: cx * 0.55, y: 0),
+                                     control: CGPoint(x: cx * 0.15, y: cy * 0.1))
+                context.stroke(leftTop, with: .color(.white.opacity(0.4)), lineWidth: lw)
+
+                var leftBot = Path()
+                leftBot.move(to: CGPoint(x: 0, y: cy * 1.55))
+                leftBot.addQuadCurve(to: CGPoint(x: cx * 0.55, y: size.height),
+                                     control: CGPoint(x: cx * 0.15, y: cy * 1.9))
+                context.stroke(leftBot, with: .color(.white.opacity(0.4)), lineWidth: lw)
+
+                // Right curved lines
+                var rightTop = Path()
+                rightTop.move(to: CGPoint(x: size.width, y: cy * 0.45))
+                rightTop.addQuadCurve(to: CGPoint(x: cx * 1.45, y: 0),
+                                      control: CGPoint(x: cx * 1.85, y: cy * 0.1))
+                context.stroke(rightTop, with: .color(.white.opacity(0.4)), lineWidth: lw)
+
+                var rightBot = Path()
+                rightBot.move(to: CGPoint(x: size.width, y: cy * 1.55))
+                rightBot.addQuadCurve(to: CGPoint(x: cx * 1.45, y: size.height),
+                                      control: CGPoint(x: cx * 1.85, y: cy * 1.9))
+                context.stroke(rightBot, with: .color(.white.opacity(0.4)), lineWidth: lw)
+            }
+
+            // Border
+            RoundedRectangle(cornerRadius: width * 0.15)
+                .stroke(Color(red: 0.70, green: 0.66, blue: 0.58).opacity(0.6), lineWidth: 0.8)
+        }
+        .frame(width: width, height: height)
     }
 }
 
@@ -403,17 +551,18 @@ struct EnvelopeFlap: View {
     let width: CGFloat
     let height: CGFloat
     let angle: CGFloat
+    var fullyOpen: Bool = false
 
     private let outsideGradient = LinearGradient(
         colors: [
-            Color(red: 0.95, green: 0.55, blue: 0.30),
-            Color(red: 0.95, green: 0.40, blue: 0.45),
-            Color(red: 0.85, green: 0.35, blue: 0.62),
-            Color(red: 0.62, green: 0.40, blue: 0.78),
-            Color(red: 0.45, green: 0.50, blue: 0.85)
+            Color(red: 0.96, green: 0.72, blue: 0.22),  // golden amber
+            Color(red: 0.96, green: 0.55, blue: 0.28),  // warm orange
+            Color(red: 0.95, green: 0.30, blue: 0.55),  // hot pink
+            Color(red: 0.82, green: 0.30, blue: 0.72),  // vibrant magenta
+            Color(red: 0.58, green: 0.48, blue: 0.90)   // rich purple
         ],
-        startPoint: .bottomLeading,
-        endPoint: .topTrailing
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
     )
 
     private let insideGradient = LinearGradient(
@@ -436,9 +585,14 @@ struct EnvelopeFlap: View {
                     .fill(outsideGradient)
             } else {
                 // Inside face — green/blue, visible when flap is open
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(insideGradient)
-                    .scaleEffect(y: -1)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(insideGradient)
+
+                    FlapText(width: width, fullyOpen: fullyOpen)
+                        .offset(y: height * 0.15)
+                }
+                .scaleEffect(y: -1)
             }
         }
         .frame(width: width, height: height)
@@ -447,6 +601,50 @@ struct EnvelopeFlap: View {
             radius: 5,
             y: 3
         )
+    }
+}
+
+// MARK: - Flap Text
+
+struct FlapText: View {
+    let width: CGFloat
+    var fullyOpen: Bool = false
+    @State private var textOpacity: Double = 0.2
+    @State private var glowAmount: Double = 0
+
+    var body: some View {
+        Text("Scapia Federal\nCredit Card")
+            .font(.system(size: width * 0.124, weight: .semibold, design: .rounded))
+            .multilineTextAlignment(.center)
+            .foregroundColor(.white)
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(textOpacity),
+                        .white.opacity(textOpacity * 0.65)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .mask(
+                    Text("Scapia Federal\nCredit Card")
+                        .font(.system(size: width * 0.124, weight: .semibold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                )
+            )
+            .foregroundColor(.clear)
+            .shadow(color: .white.opacity(glowAmount * 0.6), radius: glowAmount * 12)
+            .shadow(color: .white.opacity(glowAmount * 0.3), radius: glowAmount * 24)
+            .onChange(of: fullyOpen) { _, open in
+                if open {
+                    withAnimation(.easeInOut(duration: 2.0)) {
+                        textOpacity = 1.0
+                    }
+                    withAnimation(.easeInOut(duration: 2.0).delay(2.0)) {
+                        glowAmount = 1.0
+                    }
+                }
+            }
     }
 }
 
@@ -462,126 +660,90 @@ struct TearStripPeel: View {
 
     private let stripGradient = LinearGradient(
         colors: [
-            Color(red: 0.95, green: 0.55, blue: 0.38),
-            Color(red: 0.92, green: 0.42, blue: 0.52),
-            Color(red: 0.78, green: 0.38, blue: 0.68),
-            Color(red: 0.55, green: 0.45, blue: 0.82)
+            Color(red: 0.96, green: 0.95, blue: 0.92),
+            Color(red: 0.94, green: 0.93, blue: 0.89),
+            Color(red: 0.95, green: 0.94, blue: 0.90),
+            Color(red: 0.93, green: 0.92, blue: 0.88)
         ],
         startPoint: .leading,
         endPoint: .trailing
     )
 
     var body: some View {
-        let tearX = tearProgress * width
+        ZStack {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(stripGradient)
 
-        ZStack(alignment: .leading) {
+            // Perforations
+            stripPerforations
 
-            // ---- Stuck portion: right of tear line, stays flat ----
-            ZStack {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(stripGradient)
-
-                // Perforations
-                stripPerforations
-
-                // Pull hint (fades as you tear)
-                if tearProgress < 0.4 {
-                    HStack(spacing: 5) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 7, weight: .heavy))
-                        Text("PULL")
-                            .font(.system(size: 7, weight: .heavy, design: .rounded))
-                            .tracking(2)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 7, weight: .heavy))
-                    }
-                    .foregroundColor(.white.opacity(Double(0.55 * (1.0 - tearProgress * 2.5))))
+            // Tear hint (fades as you tear)
+            if tearProgress < 0.4 {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .heavy))
+                    Text("TEAR")
+                        .font(.system(size: 7, weight: .heavy, design: .rounded))
+                        .tracking(2)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .heavy))
                 }
-            }
-            .frame(width: width, height: height)
-            .mask(
-                HStack(spacing: 0) {
-                    Color.clear
-                        .frame(width: max(0, tearX))
-                    Color.white
-                }
-                .frame(width: width)
-            )
-
-            // ---- Peeling curl: at the tear line, lifting and curling ----
-            if tearProgress > 0.01 {
-                let curlWidth: CGFloat = min(tearX + 8, 38)
-                let liftAmount = min(tearProgress * 18, 14.0)
-                let curlAngle = min(Double(tearProgress) * 100, 60.0)
-
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(stripGradient)
-                    .overlay(
-                        // Slight highlight on the curl for 3D feel
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.25),
-                                Color.clear
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 2))
-                    )
-                    .frame(width: curlWidth, height: height)
-                    .shadow(
-                        color: .black.opacity(Double(min(tearProgress * 0.3, 0.2))),
-                        radius: tearProgress * 5,
-                        x: -tearProgress * 2,
-                        y: tearProgress * 4
-                    )
-                    .rotation3DEffect(
-                        .degrees(-curlAngle),
-                        axis: (x: 0.12, y: 1, z: 0),
-                        anchor: .trailing,
-                        perspective: 0.5
-                    )
-                    .offset(
-                        x: max(0, tearX - curlWidth + 4),
-                        y: -liftAmount
-                    )
-                    .opacity(tearProgress > 0.85 ? Double(1.0 - (tearProgress - 0.85) * 6.7) : 1.0)
-            }
-
-            // ---- Jagged tear edge at the peel line ----
-            if tearProgress > 0.03 && tearProgress < 0.95 {
-                TearEdge(height: height)
-                    .fill(Color.white.opacity(0.15))
-                    .frame(width: 4, height: height)
-                    .offset(x: tearX - 2)
+                .foregroundColor(Color(red: 0.55, green: 0.52, blue: 0.48).opacity(Double(0.7 * (1.0 - tearProgress * 2.5))))
             }
         }
         .frame(width: width, height: height)
+        .modifier(TearCurlModifier(progress: tearProgress, curlRadius: 0.18))
     }
 
     private var stripPerforations: some View {
         ZStack {
             PerforatedLine()
                 .stroke(style: StrokeStyle(lineWidth: 1.2, dash: [5, 3]))
-                .foregroundColor(.white.opacity(0.45))
+                .foregroundColor(Color(red: 0.75, green: 0.73, blue: 0.70).opacity(0.5))
                 .frame(height: 1)
                 .offset(y: -height / 2 + 2)
 
             PerforatedLine()
                 .stroke(style: StrokeStyle(lineWidth: 1.2, dash: [5, 3]))
-                .foregroundColor(.white.opacity(0.45))
+                .foregroundColor(Color(red: 0.75, green: 0.73, blue: 0.70).opacity(0.5))
                 .frame(height: 1)
                 .offset(y: height / 2 - 2)
 
             PerforatedLine()
                 .stroke(style: StrokeStyle(lineWidth: 0.5))
-                .foregroundColor(.white.opacity(0.15))
+                .foregroundColor(Color(red: 0.75, green: 0.73, blue: 0.70).opacity(0.2))
                 .frame(height: 1)
         }
     }
 }
 
 // Jagged zigzag edge at the tear point
+// MARK: - Tear Curl Modifier (Metal Shader)
+
+struct TearCurlModifier: ViewModifier, Animatable {
+    var progress: CGFloat
+    var curlRadius: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content.visualEffect { view, proxy in
+            view.layerEffect(
+                ShaderLibrary.tearCurl(
+                    .float2(proxy.size),
+                    .float(progress),
+                    .float(curlRadius)
+                ),
+                maxSampleOffset: CGSize(width: proxy.size.width, height: proxy.size.height),
+                isEnabled: progress > 0.001
+            )
+        }
+    }
+}
+
 struct TearEdge: Shape {
     let height: CGFloat
 
